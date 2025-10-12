@@ -1,0 +1,26 @@
+CMakeFiles/IOTFARM.dir/utility/twi.c.obj: \
+ C:/Users/SoftClansUser/Desktop/IOTFARM/IOT-FARM/IOT\ FARM\ SOFTWARE/NODE/utility/twi.c \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\math.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\stdlib.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\lib\gcc\avr\7.3.0\include\stddef.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\inttypes.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\lib\gcc\avr\7.3.0\include\stdint.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\stdint.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\io.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\sfr_defs.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\iom328p.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\portpins.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\common.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\version.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\fuse.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\lock.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\interrupt.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\compat\twi.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\util\twi.h \
+ C:/Users/SoftClansUser/AppData/Local/Arduino15/packages/arduino/hardware/avr/1.8.6/cores/arduino/Arduino.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\lib\gcc\avr\7.3.0\include\stdbool.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\string.h \
+ c:\users\softclansuser\appdata\local\arduino15\packages\arduino\tools\avr-gcc\7.3.0-atmel3.6.1-arduino7\avr\include\avr\pgmspace.h \
+ C:/Users/SoftClansUser/AppData/Local/Arduino15/packages/arduino/hardware/avr/1.8.6/cores/arduino/binary.h \
+ C:/Users/SoftClansUser/AppData/Local/Arduino15/packages/arduino/hardware/avr/1.8.6/variants/standard/pins_arduino.h \
+ C:/Users/SoftClansUser/Desktop/IOTFARM/IOT-FARM/IOT\ FARM\ SOFTWARE/NODE/utility/twi.h
