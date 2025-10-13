@@ -1,0 +1,4 @@
+C:/Users/SoftClansUser/Desktop/IOTFARM/IOT-FARM/IOT FARM SOFTWARE/NODE/build/CMakeFiles/IOTFARM.dir
+C:/Users/SoftClansUser/Desktop/IOTFARM/IOT-FARM/IOT FARM SOFTWARE/NODE/build/CMakeFiles/flash.dir
+C:/Users/SoftClansUser/Desktop/IOTFARM/IOT-FARM/IOT FARM SOFTWARE/NODE/build/CMakeFiles/edit_cache.dir
+C:/Users/SoftClansUser/Desktop/IOTFARM/IOT-FARM/IOT FARM SOFTWARE/NODE/build/CMakeFiles/rebuild_cache.dir
