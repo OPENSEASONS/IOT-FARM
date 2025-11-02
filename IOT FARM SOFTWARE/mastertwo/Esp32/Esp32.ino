@@ -17,6 +17,7 @@ const int   mqtt_port = 1883;
 const char* mqtt_user = "";
 const char* mqtt_pass = "";
 
+
 const char* routing_topic = "lora_mesh/routing_data";
 const char* sensor_topic  = "lora_mesh/sensor_data";
 
