@@ -1,3 +1,13 @@
+/********************************************************************
+ *  UNO MESH MASTER – LoRa + SPI → ESP8266
+ *  ---------------------------------------------------------------
+ *  • RadioHead RHMesh master (node 1)
+ *  • Builds routing table + sensor bundle
+ *  • Sends JSON to ESP8266 via SPI (master)
+ *  • Receives control JSON from ESP8266 (slave → master)
+ *  • Adjustable constants stored in EEPROM
+ ********************************************************************/
+
 #include <EEPROM.h>
 #include <RHRouter.h>
 #include <RHMesh.h>
@@ -5,303 +15,288 @@
 #include <SPI.h>
 #include <ArduinoJson.h>
 
-// Pin Definitions (matching schematic for Uno WiFi Rev3)
-#define LED_POWER 4    // Second LED on Pin 5
-#define LED 3          // Status LED on Pin 9
+// -------------------------- PINOUT --------------------------
+#define LED_POWER   4
+#define LED_STATUS  3
+#define RF95_CS    10
+#define RF95_RST    9
+#define RF95_INT    2
+#define VOLTAGE_PIN A0
+
+// -------------------------- SETTINGS ------------------------
 #define N_NODES 4
-#define RF95_CS 10     // LoRa CS on Pin 10
-#define RF95_RST 9     // LoRa RESET on Pin 9 (shared with LED)
-#define RF95_INT 2     // LoRa DIO0 on Pin 2
-#define VOLTAGE_PIN A0 // Voltage divider on A0
+#define SEND_INTERVAL       500   // ms – routing broadcast
+#define LISTEN_INTERVAL    1000   // ms – receive window
+#define BUNDLE_UPDATE_INT  2000   // ms – JSON bundle rebuild
+#define POWER_CHECK_INT    1000   // ms – voltage check
+#define MIN_VOLTAGE_ADC     920   // ~4.5 V on 5 V scale
 
-// State Machine Definitions
-#define STATE_POWER_ON 0
-#define STATE_SEND_ROUTING 1
-#define STATE_LISTEN_MESSAGES 2
-#define STATE_UPDATE_BUNDLE 3
-#define STATE_SHUTTING_DOWN 4
+// -------------------------- SPI ---------------------------
+#define SPI_START_CMD   0xA5
+#define SPI_ACK_CMD     0x06
+#define SPI_NODATA_CMD  0x15
+#define SPI_CONTROL_CMD 0xC1   // ESP → UNO control
 
-// Timing Constants (in milliseconds)
-#define SEND_INTERVAL 500
-#define LISTEN_INTERVAL 1000
-#define BUNDLE_UPDATE_INTERVAL 2000
-#define POWER_CHECK_INTERVAL 1000
+// -------------------------- GLOBALS -----------------------
+uint8_t nodeId = 1;
+uint8_t routes[N_NODES] = {0};
+int16_t rssi[N_NODES]   = {0};
 
-// Voltage Thresholds (in ADC units, 0-1023 for 0-5V)
-#define MIN_VOLTAGE 920  // ~4.5V (1023 * 4.5 / 5)
-
-// Global Variables
-uint8_t nodeId;
-uint8_t routes[N_NODES];
-int16_t rssi[N_NODES];
 RH_RF95 rf95(RF95_CS, RF95_INT);
 RHMesh *manager = nullptr;
-char buf[RH_MESH_MAX_MESSAGE_LEN];
-volatile bool dataRequested = false;
-volatile uint8_t spiDataIndex = 0;
-String meshDataBundle = "";
-unsigned long lastSendTime = 0;
-unsigned long lastListenTime = 0;
-unsigned long lastBundleTime = 0;
-unsigned long lastPowerCheckTime = 0;
-uint8_t currentState = STATE_POWER_ON;
-uint8_t currentNode = 2; // Start with node 2 for routing
 
-// SPI Protocol
-#define SPI_START_CMD 0xA5
-#define SPI_ACK_CMD 0x06
-#define SPI_NODATA_CMD 0x15
+String meshBundle = "";          // JSON sent to ESP
+String controlIn  = "";          // JSON received from ESP
+volatile bool spiTxPending = false;
+volatile uint16_t spiTxIdx = 0;
 
-// Function Prototypes
-void initializeHardware();
-int readVoltage();
-void updateRoutingTable();
-String createRoutingJSON();
-void updateMeshDataBundle();
-bool sendRoutingInfo(uint8_t targetNode);
-void processIncomingMessage();
-void handleSPIInterrupt();
-void transitionState();
-void setLEDs(uint8_t powerState, uint8_t statusState);
+// Adjustable constants (stored in EEPROM)
+struct Settings {
+  uint16_t sendInterval;
+  uint16_t listenInterval;
+  uint16_t bundleUpdateInt;
+  uint16_t minVoltageADC;
+};
+Settings cfg;
 
+// -------------------------- SETUP -------------------------
 void setup() {
-  initializeHardware();
-
-  // Initial power check
-  if (readVoltage() < MIN_VOLTAGE) {
-    currentState = STATE_SHUTTING_DOWN;
-  } else {
-    Serial.println(F("ATmega328P Master Node Ready"));
-    Serial.print(F("Node ID: "));
-    Serial.println(nodeId);
-  }
-
-  setLEDs(HIGH, LOW); // Power on state
-}
-
-void initializeHardware() {
   pinMode(LED_POWER, OUTPUT);
-  pinMode(LED, OUTPUT);
-  pinMode(RF95_RST, OUTPUT); // Shared with LED, handle reset carefully
-  digitalWrite(RF95_RST, LOW);
-  delay(10);
-  digitalWrite(RF95_RST, HIGH); // Pulse reset, LED will blink briefly
+  pinMode(LED_STATUS, OUTPUT);
+  digitalWrite(LED_POWER, HIGH);
 
   Serial.begin(115200);
   while (!Serial);
 
-  nodeId = EEPROM.read(0);
-  if (nodeId != 1) {
-    nodeId = 1;
-    EEPROM.write(0, nodeId);
-  }
+  loadSettings();
+
+  // ---- LoRa init ----
+  pinMode(RF95_RST, OUTPUT);
+  digitalWrite(RF95_RST, LOW); delay(10);
+  digitalWrite(RF95_RST, HIGH); delay(10);
 
   manager = new RHMesh(rf95, nodeId);
-  if (!manager->init()) {
-    Serial.println(F("LoRa init failed"));
-    while (1);
-  }
-  
+  if (!manager->init()) { Serial.println(F("LoRa init fail")); while (1); }
   rf95.setTxPower(23, false);
-  rf95.setFrequency(915.0);  // Check local regulations
+  rf95.setFrequency(915.0);
   rf95.setCADTimeout(500);
 
-  pinMode(MISO, OUTPUT);  // Uno WiFi Rev3 MISO is Pin 12
-  SPCR |= _BV(SPE);
-  SPCR |= _BV(SPIE);
-  SPI.attachInterrupt();
+  // ---- SPI Master ----
+  SPI.begin();
+  pinMode(MISO, INPUT);   // not used as master
+  SPI.setClockDivider(SPI_CLOCK_DIV16); // ~1 MHz
 
-  for (uint8_t n = 0; n < N_NODES; n++) {
-    routes[n] = 0;
-    rssi[n] = 0;
-  }
+  Serial.println(F("UNO Mesh Master ready"));
 }
 
-int readVoltage() {
-  int sensorValue = analogRead(VOLTAGE_PIN);
-  // Convert ADC value (0-1023) to voltage (0-5V), adjust for divider ratio (12V to 5V)
-  float voltage = sensorValue * (5.0 / 1023.0) * (12.0 / 5.0); // Scaled for 12V input
-  Serial.print(F("Voltage: "));
-  Serial.print(voltage);
-  Serial.println(F("V"));
-  return sensorValue; // Return ADC value for threshold comparison
-}
+// -------------------------- LOOP -------------------------
+unsigned long tSend = 0, tListen = 0, tBundle = 0, tPower = 0;
+uint8_t state = 0; // 0: power check, 1: send routing, 2: listen, 3: bundle
+uint8_t curNode = 2;
 
-ISR(SPI_STC_vect) {
-  handleSPIInterrupt();
-}
+void loop() {
+  unsigned long now = millis();
 
-void handleSPIInterrupt() {
-  byte received = SPDR;
-  
-  if (received == SPI_START_CMD) {
-    if (meshDataBundle.length() > 0) {
-      SPDR = SPI_ACK_CMD;
-      dataRequested = true;
-      spiDataIndex = 0;
-    } else {
-      SPDR = SPI_NODATA_CMD;
-      dataRequested = false;
-    }
-  } else if (dataRequested) {
-    if (spiDataIndex < meshDataBundle.length()) {
-      SPDR = meshDataBundle[spiDataIndex++];
-    } else {
-      SPDR = 0;
-      dataRequested = false;
-      spiDataIndex = 0;
-    }
-  }
-}
-
-void updateRoutingTable() {
-  for (uint8_t n = 0; n < N_NODES; n++) {
-    RHRouter::RoutingTableEntry *route = manager->getRouteTo(n + 1);
-    if (n + 1 == nodeId) {
-      routes[n] = 255; // Self
-    } else {
-      routes[n] = route->next_hop;
-      if (routes[n] == 0) {
-        rssi[n] = 0;
+  // ---- STATE MACHINE ----
+  switch (state) {
+    case 0: // Power check
+      if (now - tPower >= POWER_CHECK_INT) {
+        if (readVoltageADC() < cfg.minVoltageADC) {
+          shutdownLowVoltage();
+        }
+        state = 1;
+        tSend = now;
       }
-    }
+      break;
+
+    case 1: // Send routing to next node
+      digitalWrite(LED_STATUS, HIGH);
+      if (now - tSend >= cfg.sendInterval) {
+        sendRoutingInfo(curNode);
+        curNode = (curNode >= N_NODES) ? 2 : curNode + 1;
+        if (curNode == 2) { state = 2; tListen = now; }
+        tSend = now;
+      }
+      break;
+
+    case 2: // Listen for incoming messages
+      digitalWrite(LED_STATUS, LOW);
+      if (now - tListen >= cfg.listenInterval) {
+        processIncoming();
+        state = 3;
+        tBundle = now;
+      }
+      break;
+
+    case 3: // Build bundle & send to ESP via SPI
+      digitalWrite(LED_STATUS, HIGH);
+      if (now - tBundle >= cfg.bundleUpdateInt) {
+        buildBundle();
+        sendBundleToESP();
+        state = 0;
+        tPower = now;
+      }
+      break;
+  }
+
+  // ---- Handle incoming control from ESP (polled) ----
+  receiveControlFromESP();
+
+  // ---- Process any control commands ----
+  if (controlIn.length()) {
+    applyControl(controlIn);
+    controlIn = "";
   }
 }
 
-String createRoutingJSON() {
+// -------------------------- HARDWARE -------------------------
+int readVoltageADC() {
+  int adc = analogRead(VOLTAGE_PIN);
+  float v = adc * (5.0 / 1023.0) * (12.0 / 5.0);
+  Serial.print(F("Batt: ")); Serial.print(v, 2); Serial.println(F("V"));
+  return adc;
+}
+
+void shutdownLowVoltage() {
+  Serial.println(F("LOW VOLTAGE – SHUTDOWN"));
+  digitalWrite(LED_POWER, LOW);
+  digitalWrite(LED_STATUS, LOW);
+  while (1);
+}
+
+// -------------------------- LoRa -------------------------
+void updateRoutingTable() {
+  for (uint8_t i = 0; i < N_NODES; ++i) {
+    uint8_t dest = i + 1;
+    RHRouter::RoutingTableEntry *e = manager->getRouteTo(dest);
+    routes[i] = (dest == nodeId) ? 255 : e->next_hop;
+    if (e->next_hop == 0) rssi[i] = 0;
+  }
+}
+
+String routingJSON() {
   DynamicJsonDocument doc(512);
-  JsonArray routingArray = doc.to<JsonArray>();
-  
-  for (uint8_t n = 0; n < N_NODES; n++) {
-    JsonObject routeObj = routingArray.createNestedObject();
-    routeObj["n"] = routes[n];
-    routeObj["r"] = rssi[n];
+  JsonArray arr = doc.to<JsonArray>();
+  for (uint8_t i = 0; i < N_NODES; ++i) {
+    JsonObject o = arr.createNestedObject();
+    o["n"] = routes[i];
+    o["r"] = rssi[i];
   }
-  
-  String output;
-  serializeJson(doc, output);
-  return output;
+  String out;
+  serializeJson(doc, out);
+  return out;
 }
 
-void updateMeshDataBundle() {
-  DynamicJsonDocument doc(1024);
-  doc["node"] = nodeId;
-  doc["routing_table"] = createRoutingJSON();
-  doc["timestamp"] = millis();
-  doc["voltage"] = readVoltage() * (5.0 / 1023.0) * (12.0 / 5.0); // Include voltage in JSON
-  
-  serializeJson(doc, meshDataBundle);
-}
-
-bool sendRoutingInfo(uint8_t targetNode) {
-  if (targetNode == nodeId) return false;
-  
+bool sendRoutingInfo(uint8_t target) {
+  if (target == nodeId) return false;
   updateRoutingTable();
-  String routeInfo = createRoutingJSON();
-  
-  uint8_t error = manager->sendtoWait((uint8_t *)routeInfo.c_str(), routeInfo.length(), targetNode);
-  if (error == RH_ROUTER_ERROR_NONE) {
-    Serial.print(F("Sent routing to node "));
-    Serial.println(targetNode);
-    RHRouter::RoutingTableEntry *route = manager->getRouteTo(targetNode);
-    if (route->next_hop != 0) {
-      rssi[route->next_hop - 1] = rf95.lastRssi();
-    }
+  String payload = routingJSON();
+
+  uint8_t err = manager->sendtoWait((uint8_t*)payload.c_str(),
+                                   payload.length(), target);
+  if (err == RH_ROUTER_ERROR_NONE) {
+    RHRouter::RoutingTableEntry *e = manager->getRouteTo(target);
+    if (e->next_hop) rssi[e->next_hop - 1] = rf95.lastRssi();
     return true;
   }
   return false;
 }
 
-void processIncomingMessage() {
-  uint8_t from, len = sizeof(buf);
-  uint8_t to;
-  
-  if (manager->recvfromAckTimeout((uint8_t *)buf, &len, 1000, &from, &to)) {
+void processIncoming() {
+  uint8_t buf[RH_MESH_MAX_MESSAGE_LEN];
+  uint8_t len = sizeof(buf);
+  uint8_t from, to;
+
+  if (manager->recvfromAckTimeout(buf, &len, 200, &from, &to)) {
     buf[len] = '\0';
-    
-    if (buf[0] == '[') {
-      Serial.print(F("Routing from node "));
-      Serial.print(from);
-      Serial.print(F(": "));
-      Serial.println(buf);
-    } else if (buf[0] == '{') {
-      Serial.print(F("Sensor data from node "));
-      Serial.print(from);
-      Serial.print(F(": "));
-      Serial.println(buf);
-      meshDataBundle = buf; // Update bundle with sensor data for ESP32
+    String msg = (char*)buf;
+
+    if (msg.startsWith("{")) {
+      // Sensor data → store for bundle
+      meshBundle = msg;
+      Serial.print(F("Sensor from ")); Serial.println(from);
+    } else if (msg.startsWith("[")) {
+      Serial.print(F("Routing from ")); Serial.println(from);
     }
-    
-    RHRouter::RoutingTableEntry *route = manager->getRouteTo(from);
-    if (route->next_hop != 0) {
-      rssi[route->next_hop - 1] = rf95.lastRssi();
-    }
+
+    RHRouter::RoutingTableEntry *e = manager->getRouteTo(from);
+    if (e->next_hop) rssi[e->next_hop - 1] = rf95.lastRssi();
   }
 }
 
-void setLEDs(uint8_t powerState, uint8_t statusState) {
-  digitalWrite(LED_POWER, powerState);
-  digitalWrite(LED, statusState);
+// -------------------------- JSON BUNDLE --------------------
+void buildBundle() {
+  updateRoutingTable();
+  DynamicJsonDocument doc(1024);
+  doc["node"] = nodeId;
+  doc["routing_table"] = serialized(routingJSON());
+  doc["timestamp"] = millis();
+  doc["voltage"] = readVoltageADC() * (5.0 / 1023.0) * (12.0 / 5.0);
+  if (meshBundle.length()) {
+    DeserializationError err = deserializeJson(doc["sensor_data"], meshBundle);
+    if (err) doc["sensor_data"] = nullptr;
+  }
+  meshBundle = "";
+  serializeJson(doc, meshBundle);
 }
 
-void transitionState() {
-  unsigned long currentTime = millis();
-  int voltage = readVoltage();
+// -------------------------- SPI TO ESP8266 -----------------
+void sendBundleToESP() {
+  if (meshBundle.length() == 0) return;
 
-  switch (currentState) {
-    case STATE_POWER_ON:
-      setLEDs(HIGH, LOW); // Power LED on, Status LED off
-      if (currentTime - lastPowerCheckTime >= POWER_CHECK_INTERVAL) {
-        if (voltage < MIN_VOLTAGE) {
-          currentState = STATE_SHUTTING_DOWN;
-        } else {
-          currentState = STATE_SEND_ROUTING;
-          lastSendTime = currentTime;
-        }
-        lastPowerCheckTime = currentTime;
-      }
-      break;
+  digitalWrite(SS, LOW);
+  delayMicroseconds(10);
+  SPI.transfer(SPI_START_CMD);
+  uint8_t ack = SPI.transfer(0);
+  if (ack == SPI_ACK_CMD) {
+    for (size_t i = 0; i < meshBundle.length(); ++i)
+      SPI.transfer(meshBundle[i]);
+    SPI.transfer(0); // terminator
+  }
+  digitalWrite(SS, HIGH);
+}
 
-    case STATE_SEND_ROUTING:
-      setLEDs(HIGH, HIGH); // Both LEDs on during transmission
-      if (currentTime - lastSendTime >= SEND_INTERVAL) {
-        if (sendRoutingInfo(currentNode)) {
-          currentNode++;
-          if (currentNode > N_NODES) currentNode = 2;
-        }
-        if (currentNode == 2) {
-          currentState = STATE_LISTEN_MESSAGES;
-          lastListenTime = currentTime;
-        }
-        lastSendTime = currentTime;
-      }
-      break;
+// ---- Receive control JSON from ESP (ESP initiates) ----
+void receiveControlFromESP() {
+  digitalWrite(SS, LOW);
+  delayMicroseconds(10);
+  SPI.transfer(SPI_CONTROL_CMD);
+  uint8_t ack = SPI.transfer(0);
+  if (ack == SPI_ACK_CMD) {
+    controlIn = "";
+    while (true) {
+      uint8_t c = SPI.transfer(0);
+      if (c == 0) break;
+      controlIn += (char)c;
+    }
+  }
+  digitalWrite(SS, HIGH);
+}
 
-    case STATE_LISTEN_MESSAGES:
-      setLEDs(HIGH, LOW); // Power on, Status off during listen
-      if (currentTime - lastListenTime >= LISTEN_INTERVAL) {
-        processIncomingMessage();
-        currentState = STATE_UPDATE_BUNDLE;
-        lastBundleTime = currentTime;
-      }
-      break;
+// -------------------------- CONTROL FROM WEB ----------------
+void applyControl(String json) {
+  DynamicJsonDocument doc(512);
+  DeserializationError err = deserializeJson(doc, json);
+  if (err) { Serial.println(err.c_str()); return; }
 
-    case STATE_UPDATE_BUNDLE:
-      setLEDs(HIGH, HIGH); // Both on during bundle update
-      if (currentTime - lastBundleTime >= BUNDLE_UPDATE_INTERVAL && !dataRequested) {
-        updateMeshDataBundle(); // Prepare JSON bundle for ESP32
-        currentState = STATE_POWER_ON; // Return to power check cycle
-      }
-      break;
+  if (doc.containsKey("sendInterval")) cfg.sendInterval = doc["sendInterval"];
+  if (doc.containsKey("listenInterval")) cfg.listenInterval = doc["listenInterval"];
+  if (doc.containsKey("bundleUpdateInt")) cfg.bundleUpdateInt = doc["bundleUpdateInt"];
+  if (doc.containsKey("minVoltageADC")) cfg.minVoltageADC = doc["minVoltageADC"];
 
-    case STATE_SHUTTING_DOWN:
-      setLEDs(LOW, LOW); // Both LEDs off for power off
-      Serial.println(F("Shutting down due to low voltage"));
-      while (1) {} // Halt execution
-      break;
+  saveSettings();
+  Serial.println(F("Settings updated"));
+}
+
+// -------------------------- EEPROM -----------------------
+void loadSettings() {
+  EEPROM.get(0, cfg);
+  if (cfg.sendInterval == 0xFFFF) { // first boot
+    cfg.sendInterval = SEND_INTERVAL;
+    cfg.listenInterval = LISTEN_INTERVAL;
+    cfg.bundleUpdateInt = BUNDLE_UPDATE_INT;
+    cfg.minVoltageADC = MIN_VOLTAGE_ADC;
+    saveSettings();
   }
 }
-
-void loop() {
-  transitionState();
-}
+void saveSettings() { EEPROM.put(0, cfg); }
